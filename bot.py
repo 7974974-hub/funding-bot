@@ -50,40 +50,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=user_keyboard
     )
 
-# ---------- INFO ----------
-async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- ADMIN ----------
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("👑 لوحة الأدمن جاهزة (كما هي بدون تغيير)")
+
+# ---------- ROUTER ----------
+async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
     user_id = update.effective_user.id
-    cursor.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
-    points = cursor.fetchone()[0]
 
-    await update.message.reply_text(
-        f"🆔 آيديك: {user_id}\n💰 نقاطك: {points}"
-    )
+    # معلومات الحساب
+    if text == "ℹ️ معلومات الحساب":
+        cursor.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
+        points = cursor.fetchone()[0]
+        await update.message.reply_text(
+            f"🆔 آيديك: {user_id}\n💰 نقاطك: {points}"
+        )
 
-# ---------- BUY POINTS ----------
-async def buy_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"💳 لشراء النقاط راسل الأدمن مباشرة:\n{ADMIN_USERNAME}"
-    )
+    # شراء نقاط
+    elif text == "💳 شراء نقاط":
+        await update.message.reply_text(
+            f"💳 لشراء النقاط راسل الأدمن:\n{ADMIN_USERNAME}"
+        )
 
-# ---------- FUND CHANNEL ----------
-async def fund_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["step"] = "channel"
-    await update.message.reply_text("📣 أرسل يوزر القناة:")
+    # تجميع نقاط (placeholder)
+    elif text == "🎯 تجميع نقاط":
+        await update.message.reply_text("🎯 سيتم تفعيل تجميع النقاط لاحقاً")
 
-async def handle_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    step = context.user_data.get("step")
+    # تمويل قناة
+    elif text == "📣 تمويل قناتك":
+        context.user_data["step"] = "channel"
+        await update.message.reply_text("📣 أرسل يوزر القناة:")
 
-    if step == "channel":
-        context.user_data["channel"] = update.message.text
+    # خطوات تمويل القناة
+    elif context.user_data.get("step") == "channel":
+        context.user_data["channel"] = text
         context.user_data["step"] = "points"
         await update.message.reply_text("🔢 أرسل عدد النقاط:")
-        return
 
-    if step == "points":
+    elif context.user_data.get("step") == "points":
         try:
-            points = int(update.message.text)
+            points = int(text)
         except:
             await update.message.reply_text("❌ أرسل رقم صحيح")
             return
@@ -117,24 +126,11 @@ async def handle_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ تم إرسال طلبك للأدمن")
         context.user_data.clear()
 
-# ---------- ROUTER ----------
-async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text == "ℹ️ معلومات الحساب":
-        await info(update, context)
-    elif text == "💳 شراء نقاط":
-        await buy_points(update, context)
-    elif text == "📣 تمويل قناتك":
-        await fund_channel(update, context)
-    elif text == "🎯 تجميع نقاط":
-        await update.message.reply_text("🎯 سيتم تفعيل تجميع النقاط لاحقاً")
-
 # ---------- MAIN ----------
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("admin", admin))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, router))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_steps))
 
 print("Bot is running...")
 app.run_polling()
