@@ -26,21 +26,37 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
+# قنوات اشتراك إجباري (تفتح البوت)
 cur.execute("""
-CREATE TABLE IF NOT EXISTS channels (
+CREATE TABLE IF NOT EXISTS force_channels (
     username TEXT PRIMARY KEY
+)
+""")
+
+# قنوات تجميع نقاط (مهام)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS reward_channels (
+    username TEXT PRIMARY KEY,
+    reward INTEGER DEFAULT 10
+)
+""")
+
+# لمنع التكرار (مرة وحدة لكل قناة)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS user_rewards (
+    user_id INTEGER,
+    channel TEXT,
+    PRIMARY KEY (user_id, channel)
 )
 """)
 
 db.commit()
 
-# ================= KEYBOARDS =================
+# ================= MENUS =================
 def user_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎯 تجميع نقاط", callback_data="collect")],
         [InlineKeyboardButton("💰 رصيدي", callback_data="balance")],
-        [InlineKeyboardButton("🔁 تحويل نقاط", callback_data="transfer")],
-        [InlineKeyboardButton("♻️ استبدال نقاط", callback_data="redeem")],
         [InlineKeyboardButton("👥 رابط الدعوة", callback_data="invite")],
         [InlineKeyboardButton("🛒 شراء نقاط", callback_data="buy")]
     ])
@@ -51,31 +67,57 @@ def admin_menu():
         [InlineKeyboardButton("🚫 حظر مستخدم", callback_data="ban_user")],
         [InlineKeyboardButton("✅ فك حظر", callback_data="unban_user")],
         [InlineKeyboardButton("📊 الإحصائيات", callback_data="stats")],
-        [InlineKeyboardButton("📢 إدارة القنوات", callback_data="channels_menu")]
+        [InlineKeyboardButton("🎯 قنوات تجميع النقاط", callback_data="reward_menu")]
     ])
 
-def channels_menu():
+def reward_admin_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ إضافة قناة", callback_data="add_channel")],
-        [InlineKeyboardButton("❌ حذف قناة", callback_data="remove_channel")],
-        [InlineKeyboardButton("📋 عرض القنوات", callback_data="list_channels")],
+        [InlineKeyboardButton("➕ إضافة قناة تجميع", callback_data="reward_add")],
+        [InlineKeyboardButton("❌ حذف قناة تجميع", callback_data="reward_del")],
+        [InlineKeyboardButton("📋 عرض قنوات التجميع", callback_data="reward_list")],
         [InlineKeyboardButton("⬅️ رجوع", callback_data="admin_back")]
     ])
 
+# ================= HELPERS =================
+async def check_force_sub(bot, user_id):
+    cur.execute("SELECT username FROM force_channels")
+    rows = cur.fetchall()
+    for (ch,) in rows:
+        try:
+            m = await bot.get_chat_member(ch, user_id)
+            if m.status not in ["member", "administrator", "creator"]:
+                return False
+        except:
+            return False
+    return True
+
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
 
-    cur.execute("SELECT banned FROM users WHERE user_id=?", (user_id,))
-    row = cur.fetchone()
-    if row and row[0] == 1:
+    # حظر
+    cur.execute("SELECT banned FROM users WHERE user_id=?", (uid,))
+    r = cur.fetchone()
+    if r and r[0] == 1:
         return
 
-    cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    # اشتراك إجباري
+    if not await check_force_sub(context.bot, uid):
+        cur.execute("SELECT username FROM force_channels")
+        chs = cur.fetchall()
+        if chs:
+            btns = [[InlineKeyboardButton(c[0], url=f"https://t.me/{c[0].replace('@','')}")] for c in chs]
+            await update.message.reply_text(
+                "🚫 لازم تشترك بالقنوات أولاً ثم /start",
+                reply_markup=InlineKeyboardMarkup(btns)
+            )
+            return
+
+    cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
     db.commit()
 
     await update.message.reply_text(
-        f"👋 أهلاً بك في {BOT_NAME}\nاختر من القائمة 👇",
+        f"👋 أهلاً بك في {BOT_NAME}",
         reply_markup=user_menu()
     )
 
@@ -87,84 +129,116 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= CALLBACKS =================
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    uid = query.from_user.id
-    data = query.data
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    d = q.data
 
     # ===== USER =====
-    if data == "balance":
+    if d == "balance":
         cur.execute("SELECT points FROM users WHERE user_id=?", (uid,))
         p = cur.fetchone()[0]
-        await query.message.reply_text(f"💰 رصيدك: {p} نقطة")
+        await q.message.reply_text(f"💰 رصيدك: {p} نقطة")
 
-    elif data == "invite":
+    elif d == "invite":
         link = f"https://t.me/{context.bot.username}?start={uid}"
-        await query.message.reply_text(f"👥 رابطك:\n{link}\nكل دعوة = 10 نقاط")
+        await q.message.reply_text(f"👥 رابطك:\n{link}")
 
-    elif data == "buy":
-        await query.message.reply_text("🛒 شراء نقاط\nراسل الأدمن")
+    elif d == "buy":
+        await q.message.reply_text("🛒 شراء نقاط\nراسل الأدمن")
 
-    elif data == "collect":
-        await query.message.reply_text("🎯 سيتم إضافة قنوات للتجميع قريباً")
+    elif d == "collect":
+        cur.execute("SELECT username, reward FROM reward_channels")
+        rows = cur.fetchall()
+        if not rows:
+            await q.message.reply_text("❌ لا توجد قنوات تجميع حالياً")
+            return
 
-    elif data == "transfer":
-        await query.message.reply_text("🔁 اكتب ID المستخدم والمبلغ")
+        text = "📢 اشترك بالقنوات وخذ نقاط:\n\n"
+        btns = []
+        for ch, rw in rows:
+            text += f"{ch} ➜ {rw} نقاط\n"
+            btns.append([
+                InlineKeyboardButton(ch, url=f"https://t.me/{ch.replace('@','')}"),
+                InlineKeyboardButton("تحقق ✅", callback_data=f"check|{ch}")
+            ])
+        await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(btns))
 
-    elif data == "redeem":
-        await query.message.reply_text("♻️ الاستبدال قيد الإعداد")
+    elif d.startswith("check|"):
+        ch = d.split("|")[1]
+        # مرة وحدة
+        cur.execute("SELECT 1 FROM user_rewards WHERE user_id=? AND channel=?", (uid, ch))
+        if cur.fetchone():
+            await q.message.reply_text("⚠️ أخذت نقاط هذه القناة مسبقاً")
+            return
+        try:
+            m = await context.bot.get_chat_member(ch, uid)
+            if m.status not in ["member", "administrator", "creator"]:
+                raise Exception
+        except:
+            await q.message.reply_text("❌ لم تشترك بعد")
+            return
+
+        cur.execute("SELECT reward FROM reward_channels WHERE username=?", (ch,))
+        rw = cur.fetchone()[0]
+        cur.execute("UPDATE users SET points = points + ? WHERE user_id=?", (rw, uid))
+        cur.execute("INSERT INTO user_rewards (user_id, channel) VALUES (?,?)", (uid, ch))
+        db.commit()
+        await q.message.reply_text(f"✅ تم إضافة {rw} نقاط")
 
     # ===== ADMIN =====
     if uid != ADMIN_ID:
         return
 
-    if data == "channels_menu":
-        await query.message.reply_text("📢 إدارة القنوات", reply_markup=channels_menu())
+    if d == "reward_menu":
+        await q.message.reply_text("🎯 قنوات تجميع النقاط", reply_markup=reward_admin_menu())
 
-    elif data == "list_channels":
-        cur.execute("SELECT username FROM channels")
+    elif d == "reward_list":
+        cur.execute("SELECT username, reward FROM reward_channels")
         rows = cur.fetchall()
         if not rows:
-            await query.message.reply_text("❌ لا توجد قنوات")
+            await q.message.reply_text("❌ لا توجد قنوات")
         else:
-            txt = "\n".join([f"@{r[0]}" for r in rows])
-            await query.message.reply_text(f"📋 القنوات:\n{txt}")
+            msg = "📋 قنوات التجميع:\n\n"
+            for ch, rw in rows:
+                msg += f"{ch} ➜ {rw} نقاط\n"
+            await q.message.reply_text(msg)
 
-    elif data == "admin_back":
-        await query.message.reply_text("👑 لوحة الأدمن", reply_markup=admin_menu())
+    elif d == "reward_add":
+        context.user_data["state"] = "reward_add"
+        await q.message.reply_text("✏️ أرسل:\n@channel (النقاط 10 تلقائي)")
 
-    elif data == "stats":
+    elif d == "reward_del":
+        context.user_data["state"] = "reward_del"
+        await q.message.reply_text("✏️ أرسل:\n@channel")
+
+    elif d == "admin_back":
+        await q.message.reply_text("👑 لوحة الأدمن", reply_markup=admin_menu())
+
+    elif d == "stats":
         cur.execute("SELECT COUNT(*) FROM users")
-        count = cur.fetchone()[0]
-        await query.message.reply_text(f"📊 عدد المستخدمين: {count}")
+        await q.message.reply_text(f"📊 المستخدمين: {cur.fetchone()[0]}")
 
-    elif data == "add_channel":
-        context.user_data["state"] = "add_channel"
-        await query.message.reply_text("✏️ أرسل يوزر القناة بدون @")
-
-    elif data == "remove_channel":
-        context.user_data["state"] = "remove_channel"
-        await query.message.reply_text("✏️ أرسل يوزر القناة بدون @")
-
-# ================= TEXT HANDLER =================
+# ================= TEXT =================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-
-    state = context.user_data.get("state")
-    text = update.message.text.replace("@", "")
-
-    if state == "add_channel":
-        cur.execute("INSERT OR IGNORE INTO channels VALUES (?)", (text,))
+    st = context.user_data.get("state")
+    if not st:
+        return
+    txt = update.message.text.strip()
+    if st == "reward_add":
+        if not txt.startswith("@"):
+            await update.message.reply_text("❌ لازم @")
+            return
+        cur.execute("INSERT OR IGNORE INTO reward_channels (username, reward) VALUES (?,10)", (txt,))
         db.commit()
-        await update.message.reply_text("✅ تم إضافة القناة")
-        context.user_data.clear()
-
-    elif state == "remove_channel":
-        cur.execute("DELETE FROM channels WHERE username=?", (text,))
+        await update.message.reply_text("✅ تمت إضافة قناة التجميع")
+    elif st == "reward_del":
+        cur.execute("DELETE FROM reward_channels WHERE username=?", (txt,))
         db.commit()
-        await update.message.reply_text("❌ تم حذف القناة")
-        context.user_data.clear()
+        await update.message.reply_text("❌ تم حذف قناة التجميع")
+    context.user_data.clear()
 
 # ================= RUN =================
 def main():
@@ -178,3 +252,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
