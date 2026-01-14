@@ -1,19 +1,29 @@
 import os
 import sqlite3
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 6858655581
+FORCE_CHANNEL = "@Bot_TMWIK"
+CHANNEL_LINK = "https://t.me/Bot_TMWIK"
+ADMIN_USERNAME = "@YQOMARN"
 
-# ====== DATABASE ======
+# ================= DATABASE =================
 db = sqlite3.connect("users.db", check_same_thread=False)
 cursor = db.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    points INTEGER DEFAULT 0
+    points INTEGER DEFAULT 0,
+    invited_by INTEGER
 )
 """)
 
@@ -25,117 +35,206 @@ CREATE TABLE IF NOT EXISTS settings (
 """)
 
 cursor.execute("INSERT OR IGNORE INTO settings VALUES ('invite_points', 10)")
-cursor.execute("INSERT OR IGNORE INTO settings VALUES ('gift_points', 50)")
+cursor.execute("INSERT OR IGNORE INTO settings VALUES ('gift_points', 5)")
 db.commit()
 
-# ====== START ======
+# ================= KEYBOARDS =================
+user_kb = ReplyKeyboardMarkup(
+    [
+        ["🎯 تجميع نقاط", "💰 رصيدي"],
+        ["🔗 رابط الدعوة", "🔄 تحويل نقاط"],
+        ["🛒 شراء نقاط", "ℹ️ معلومات الحساب"]
+    ],
+    resize_keyboard=True
+)
+
+admin_kb = ReplyKeyboardMarkup(
+    [
+        ["➕ إضافة نقاط", "➖ خصم نقاط"],
+        ["⚙️ الإعدادات", "📢 إذاعة"],
+        ["📊 إحصائيات", "🔙 رجوع"]
+    ],
+    resize_keyboard=True
+)
+
+# ================= HELPERS =================
+async def is_subscribed(bot, user_id):
+    try:
+        member = await bot.get_chat_member(FORCE_CHANNEL, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except:
+        return False
+
+def get_setting(key):
+    cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
+    return cursor.fetchone()[0]
+
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    cursor.execute("INSERT OR IGNORE INTO users VALUES (?,0)", (user_id,))
-    db.commit()
+    user = update.effective_user
+    uid = user.id
 
-    kb = [
-        [InlineKeyboardButton("🎯 تجميع نقاط", callback_data="gift")],
-        [InlineKeyboardButton("💰 رصيدي", callback_data="balance")],
-        [InlineKeyboardButton("🔗 رابط الدعوة", callback_data="invite")]
-    ]
+    if not await is_subscribed(context.bot, uid):
+        await update.message.reply_text(
+            f"🚫 لازم تشترك بالقناة أولاً:\n{CHANNEL_LINK}\n\nوبعدها اكتب /start"
+        )
+        return
 
-    if user_id == ADMIN_ID:
-        kb.append([InlineKeyboardButton("🛠 لوحة الأدمن", callback_data="admin")])
+    inviter = None
+    if context.args:
+        try:
+            inviter = int(context.args[0])
+        except:
+            pass
+
+    cursor.execute("SELECT user_id FROM users WHERE user_id=?", (uid,))
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO users (user_id, points, invited_by) VALUES (?,?,?)",
+            (uid, 0, inviter)
+        )
+        if inviter:
+            ip = get_setting("invite_points")
+            cursor.execute(
+                "UPDATE users SET points = points + ? WHERE user_id=?",
+                (ip, inviter)
+            )
+        db.commit()
 
     await update.message.reply_text(
         "👋 أهلاً بك في بوت تمويلك",
-        reply_markup=InlineKeyboardMarkup(kb)
+        reply_markup=user_kb
     )
 
-# ====== CALLBACKS ======
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
+# ================= USER ACTIONS =================
+async def user_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    uid = update.effective_user.id
 
-    if q.data == "balance":
+    if text == "💰 رصيدي":
         cursor.execute("SELECT points FROM users WHERE user_id=?", (uid,))
         p = cursor.fetchone()[0]
-        await q.message.reply_text(f"💰 رصيدك: {p}")
+        await update.message.reply_text(f"💰 رصيدك: {p} نقطة")
 
-    elif q.data == "gift":
-        cursor.execute("SELECT value FROM settings WHERE key='gift_points'")
-        g = cursor.fetchone()[0]
-        cursor.execute("UPDATE users SET points = points + ? WHERE user_id=?", (g, uid))
-        db.commit()
-        await q.message.reply_text(f"🎁 تم إضافة {g} نقطة")
-
-    elif q.data == "invite":
-        cursor.execute("SELECT value FROM settings WHERE key='invite_points'")
-        ip = cursor.fetchone()[0]
+    elif text == "🔗 رابط الدعوة":
+        ip = get_setting("invite_points")
         link = f"https://t.me/{context.bot.username}?start={uid}"
-        await q.message.reply_text(f"🔗 رابطك:\n{link}\n👤 كل شخص = {ip} نقطة")
-
-    elif q.data == "admin" and uid == ADMIN_ID:
-        kb = [
-            [InlineKeyboardButton("➕ إضافة نقاط", callback_data="add")],
-            [InlineKeyboardButton("➖ خصم نقاط", callback_data="remove")],
-            [InlineKeyboardButton("⚙️ إعدادات", callback_data="settings")],
-            [InlineKeyboardButton("📢 إذاعة", callback_data="broadcast")],
-            [InlineKeyboardButton("📊 إحصائيات", callback_data="stats")]
-        ]
-        await q.message.reply_text("🛠 لوحة الأدمن", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif q.data == "stats":
-        cursor.execute("SELECT COUNT(*) FROM users")
-        c = cursor.fetchone()[0]
-        await q.message.reply_text(f"👥 عدد المستخدمين: {c}")
-
-    elif q.data == "settings":
-        await q.message.reply_text(
-            "⚙️ الإعدادات:\n"
-            "/set_invite 20\n"
-            "/set_gift 100"
+        await update.message.reply_text(
+            f"🔗 رابطك:\n{link}\n\n👤 كل شخص = {ip} نقطة"
         )
 
-    elif q.data == "add":
-        await q.message.reply_text("✍️ اكتب:\n/add user_id points")
+    elif text == "🎯 تجميع نقاط":
+        gp = get_setting("gift_points")
+        cursor.execute(
+            "UPDATE users SET points = points + ? WHERE user_id=?",
+            (gp, uid)
+        )
+        db.commit()
+        await update.message.reply_text(f"🎁 تم إضافة {gp} نقاط")
 
-    elif q.data == "remove":
-        await q.message.reply_text("✍️ اكتب:\n/remove user_id points")
+    elif text == "🔄 تحويل نقاط":
+        await update.message.reply_text(
+            "🔄 التحويل قريباً\n(سيُفعل من الأدمن)"
+        )
 
-    elif q.data == "broadcast":
-        await q.message.reply_text("✍️ ارسل الرسالة للإذاعة")
+    elif text == "🛒 شراء نقاط":
+        await update.message.reply_text(
+            f"🛒 شراء نقاط\nراسل الأدمن: {ADMIN_USERNAME}"
+        )
 
-# ====== ADMIN COMMANDS ======
-async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    elif text == "ℹ️ معلومات الحساب":
+        await update.message.reply_text(
+            f"👤 آيديك: {uid}\n📌 البوت: تمويل وتجميع نقاط"
+        )
+
+    # ---------- ADMIN ----------
+    elif text == "/admin" and uid == ADMIN_ID:
+        await update.message.reply_text(
+            "🛠 لوحة الأدمن",
+            reply_markup=admin_kb
+        )
+
+    elif uid == ADMIN_ID and text == "➕ إضافة نقاط":
+        context.user_data["mode"] = "add"
+        await update.message.reply_text("✏️ ارسل:\nID POINTS")
+
+    elif uid == ADMIN_ID and text == "➖ خصم نقاط":
+        context.user_data["mode"] = "remove"
+        await update.message.reply_text("✏️ ارسل:\nID POINTS")
+
+    elif uid == ADMIN_ID and text == "⚙️ الإعدادات":
+        await update.message.reply_text(
+            "⚙️ الإعدادات:\n"
+            "/set_invite 20\n"
+            "/set_gift 10"
+        )
+
+    elif uid == ADMIN_ID and text == "📢 إذاعة":
+        context.user_data["broadcast"] = True
+        await update.message.reply_text("✏️ ارسل رسالة الإذاعة")
+
+    elif uid == ADMIN_ID and text == "📊 إحصائيات":
+        cursor.execute("SELECT COUNT(*) FROM users")
+        c = cursor.fetchone()[0]
+        await update.message.reply_text(f"👥 عدد المستخدمين: {c}")
+
+    elif uid == ADMIN_ID and text == "🔙 رجوع":
+        await update.message.reply_text("رجعت للقائمة", reply_markup=user_kb)
+
+    # ---------- ADMIN TEXT INPUT ----------
+    elif uid == ADMIN_ID and context.user_data.get("mode"):
+        try:
+            tid, pts = map(int, text.split())
+        except:
+            await update.message.reply_text("❌ صيغة خاطئة")
+            return
+
+        if context.user_data["mode"] == "add":
+            cursor.execute("UPDATE users SET points = points + ? WHERE user_id=?", (pts, tid))
+            db.commit()
+            await update.message.reply_text("✅ تم إضافة النقاط")
+
+        elif context.user_data["mode"] == "remove":
+            cursor.execute("UPDATE users SET points = points - ? WHERE user_id=?", (pts, tid))
+            db.commit()
+            await update.message.reply_text("✅ تم الخصم")
+
+        context.user_data["mode"] = None
+
+    elif uid == ADMIN_ID and context.user_data.get("broadcast"):
+        cursor.execute("SELECT user_id FROM users")
+        for u in cursor.fetchall():
+            try:
+                await context.bot.send_message(u[0], text)
+            except:
+                pass
+        context.user_data["broadcast"] = False
+        await update.message.reply_text("📢 تم الإرسال")
+
+# ================= COMMAND SETTINGS =================
+async def set_invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+    v = int(context.args[0])
+    cursor.execute("UPDATE settings SET value=? WHERE key='invite_points'", (v,))
+    db.commit()
+    await update.message.reply_text("✅ تم تعديل نقاط الدعوة")
 
-    text = update.message.text.split()
+async def set_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    v = int(context.args[0])
+    cursor.execute("UPDATE settings SET value=? WHERE key='gift_points'", (v,))
+    db.commit()
+    await update.message.reply_text("✅ تم تعديل هدية التجميع")
 
-    if text[0] == "/add":
-        cursor.execute("UPDATE users SET points = points + ? WHERE user_id=?", (int(text[2]), int(text[1])))
-        db.commit()
-        await update.message.reply_text("✅ تم إضافة النقاط")
-
-    elif text[0] == "/remove":
-        cursor.execute("UPDATE users SET points = points - ? WHERE user_id=?", (int(text[2]), int(text[1])))
-        db.commit()
-        await update.message.reply_text("✅ تم الخصم")
-
-    elif text[0] == "/set_invite":
-        cursor.execute("UPDATE settings SET value=? WHERE key='invite_points'", (int(text[1]),))
-        db.commit()
-        await update.message.reply_text("✅ تم تعديل نقاط الدعوة")
-
-    elif text[0] == "/set_gift":
-        cursor.execute("UPDATE settings SET value=? WHERE key='gift_points'", (int(text[1]),))
-        db.commit()
-        await update.message.reply_text("✅ تم تعديل هدية التجميع")
-
-# ====== RUN ======
+# ================= RUN =================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(filters.TEXT & filters.COMMAND, admin_cmd))
+    app.add_handler(CommandHandler("set_invite", set_invite))
+    app.add_handler(CommandHandler("set_gift", set_gift))
+    app.add_handler(MessageHandler(filters.TEXT, user_actions))
     print("Bot is running...")
     app.run_polling()
 
