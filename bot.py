@@ -3,132 +3,178 @@ import sqlite3
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-BOT_TOKEN =8559491392:AAG0FDmmL26jl3whCOY-sOrScWzehQ7g6VI
+# ====== الإعدادات ======
+BOT_TOKEN = "8559491392:AAG0FDmmL26jl3whCOY-sOrScWzehQ7g6VI"
 ADMIN_ID = 6858655581
+BOT_NAME = "بوت تمويلك"
 
+# ====== قاعدة البيانات ======
 db = sqlite3.connect("bot.db", check_same_thread=False)
-cr = db.cursor()
+cursor = db.cursor()
 
-cr.execute("""CREATE TABLE IF NOT EXISTS users (
-id INTEGER PRIMARY KEY,
-points INTEGER DEFAULT 0,
-banned INTEGER DEFAULT 0
-)""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    points INTEGER DEFAULT 0,
+    banned INTEGER DEFAULT 0
+)
+""")
 
-cr.execute("""CREATE TABLE IF NOT EXISTS force_channels (
-channel TEXT PRIMARY KEY
-)""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS force_channels (
+    channel TEXT PRIMARY KEY
+)
+""")
 
-cr.execute("""CREATE TABLE IF NOT EXISTS collect_channels (
-channel TEXT PRIMARY KEY,
-reward INTEGER
-)""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS collect_channels (
+    channel TEXT PRIMARY KEY
+)
+""")
 
 db.commit()
 
-def user_keyboard():
-    return ReplyKeyboardMarkup([
-        ["🎯 تجميع نقاط", "🔄 تحويل نقاط"],
-        ["💰 رصيدي", "👥 رابط الدعوة"],
-        ["🛒 شراء نقاط", "♻️ استبدال نقاط"],
-        ["ℹ️ معلومات الحساب"]
-    ], resize_keyboard=True)
+# ====== لوحات ======
+user_keyboard = ReplyKeyboardMarkup(
+    [
+        ["🎯 تجميع نقاط", "💰 رصيدي"],
+        ["🔄 تحويل نقاط", "👥 رابط الدعوة"],
+        ["🛒 شراء نقاط", "ℹ️ معلومات الحساب"],
+    ],
+    resize_keyboard=True
+)
 
-def admin_keyboard():
-    return ReplyKeyboardMarkup([
+admin_keyboard = ReplyKeyboardMarkup(
+    [
         ["➕ إضافة نقاط", "🚫 حظر مستخدم"],
         ["✅ فك حظر", "📊 الإحصائيات"],
-        ["📢 إدارة الاشتراك الإجباري"],
+        ["📢 إدارة قنوات الاشتراك"],
         ["🎯 قنوات تجميع النقاط"],
         ["⬅️ رجوع"]
-    ], resize_keyboard=True)
+    ],
+    resize_keyboard=True
+)
 
-async def check_force(bot, user_id):
-    cr.execute("SELECT channel FROM force_channels")
-    for (ch,) in cr.fetchall():
-        try:
-            m = await bot.get_chat_member(ch, user_id)
-            if m.status not in ["member", "administrator", "creator"]:
-                return False
-        except:
-            return False
-    return True
+force_channels_keyboard = ReplyKeyboardMarkup(
+    [
+        ["➕ إضافة قناة اشتراك"],
+        ["❌ حذف قناة اشتراك"],
+        ["📋 عرض قنوات الاشتراك"],
+        ["⬅️ رجوع"]
+    ],
+    resize_keyboard=True
+)
 
+collect_channels_keyboard = ReplyKeyboardMarkup(
+    [
+        ["➕ إضافة قناة تجميع"],
+        ["❌ حذف قناة تجميع"],
+        ["📋 عرض قنوات التجميع"],
+        ["⬅️ رجوع"]
+    ],
+    resize_keyboard=True
+)
+
+# ====== أدوات ======
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+def is_banned(user_id):
+    cursor.execute("SELECT banned FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    return row and row[0] == 1
+
+# ====== أوامر ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    cr.execute("SELECT banned FROM users WHERE id=?", (uid,))
-    r = cr.fetchone()
-    if not r:
-        cr.execute("INSERT INTO users (id) VALUES (?)", (uid,))
-        db.commit()
-    elif r[0] == 1:
+    user_id = update.effective_user.id
+
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    db.commit()
+
+    if is_banned(user_id):
+        await update.message.reply_text("🚫 أنت محظور")
         return
 
-    if not await check_force(context.bot, uid):
-        cr.execute("SELECT channel FROM force_channels")
-        chs = cr.fetchall()
-        txt = "🚫 اشترك بالقنوات أولاً:\n\n"
-        for c in chs:
-            txt += f"{c[0]}\n"
-        await update.message.reply_text(txt)
-        return
+    # فحص الاشتراك الإجباري
+    cursor.execute("SELECT channel FROM force_channels")
+    channels = cursor.fetchall()
+
+    for (ch,) in channels:
+        try:
+            member = await context.bot.get_chat_member(ch, user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                await update.message.reply_text(
+                    f"🚫 لازم تشترك بالقناة أولاً:\nhttps://t.me/{ch.lstrip('@')}"
+                )
+                return
+        except:
+            pass
 
     await update.message.reply_text(
-        "👋 أهلاً بك في *بوت تمويلك*\nاختر من القائمة 👇",
-        reply_markup=user_keyboard(),
-        parse_mode="Markdown"
+        f"👋 أهلاً بك في {BOT_NAME}\n👇 اختر من القائمة",
+        reply_markup=user_keyboard
     )
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         return
-    await update.message.reply_text("👑 لوحة الأدمن", reply_markup=admin_keyboard())
+    await update.message.reply_text("👑 لوحة الأدمن", reply_markup=admin_keyboard)
 
-async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+# ====== رسائل ======
+async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    user_id = update.effective_user.id
 
+    if is_banned(user_id):
+        return
+
+    # ==== مستخدم ====
     if text == "💰 رصيدي":
-        cr.execute("SELECT points FROM users WHERE id=?", (uid,))
-        await update.message.reply_text(f"💰 رصيدك: {cr.fetchone()[0]} نقطة")
+        cursor.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
+        points = cursor.fetchone()[0]
+        await update.message.reply_text(f"💰 رصيدك: {points} نقطة")
 
     elif text == "👥 رابط الدعوة":
-        await update.message.reply_text(
-            f"https://t.me/{context.bot.username}?start={uid}\nكل دعوة = 10 نقاط"
-        )
+        link = f"https://t.me/{context.bot.username}?start={user_id}"
+        await update.message.reply_text(f"👥 رابطك:\n{link}\n\nكل دعوة = 10 نقاط")
+
+    elif text == "ℹ️ معلومات الحساب":
+        await update.message.reply_text(f"🆔 ID: {user_id}\n📌 البوت: {BOT_NAME}")
 
     elif text == "🎯 تجميع نقاط":
-        cr.execute("SELECT channel,reward FROM collect_channels")
-        rows = cr.fetchall()
-        if not rows:
+        cursor.execute("SELECT channel FROM collect_channels")
+        chans = cursor.fetchall()
+        if not chans:
             await update.message.reply_text("❌ لا توجد قنوات حالياً")
         else:
-            msg = "🎯 قنوات التجميع:\n\n"
-            for c,r in rows:
-                msg += f"{c} ➜ {r} نقاط\n"
+            msg = "🎯 اشترك بالقنوات التالية:\n\n"
+            for (c,) in chans:
+                msg += f"https://t.me/{c.lstrip('@')}\n"
             await update.message.reply_text(msg)
 
-    elif text == "📊 الإحصائيات" and uid == ADMIN_ID:
-        cr.execute("SELECT COUNT(*) FROM users")
-        await update.message.reply_text(f"👥 المستخدمين: {cr.fetchone()[0]}")
+    # ==== أدمن ====
+    elif text == "📢 إدارة قنوات الاشتراك" and is_admin(user_id):
+        await update.message.reply_text("📢 إدارة قنوات الاشتراك", reply_markup=force_channels_keyboard)
 
-    elif text == "📢 إدارة الاشتراك الإجباري" and uid == ADMIN_ID:
-        await update.message.reply_text("أرسل يوزر القناة مع @ للإضافة")
+    elif text == "🎯 قنوات تجميع النقاط" and is_admin(user_id):
+        await update.message.reply_text("🎯 إدارة قنوات التجميع", reply_markup=collect_channels_keyboard)
 
-    elif text.startswith("@") and uid == ADMIN_ID:
-        cr.execute("INSERT OR IGNORE INTO force_channels VALUES (?)", (text,))
-        db.commit()
-        await update.message.reply_text("✅ تمت إضافة قناة اشتراك إجباري")
+    elif text == "📊 الإحصائيات" and is_admin(user_id):
+        cursor.execute("SELECT COUNT(*) FROM users")
+        count = cursor.fetchone()[0]
+        await update.message.reply_text(f"📊 عدد المستخدمين: {count}")
 
-    elif text == "🎯 قنوات تجميع النقاط" and uid == ADMIN_ID:
-        await update.message.reply_text("أرسل: @channel 10")
+    elif text == "⬅️ رجوع":
+        if is_admin(user_id):
+            await update.message.reply_text("👑 لوحة الأدمن", reply_markup=admin_keyboard)
+        else:
+            await update.message.reply_text("⬅️ رجوع", reply_markup=user_keyboard)
 
-    elif "@" in text and uid == ADMIN_ID and " " in text:
-        ch, pts = text.split()
-        cr.execute("INSERT OR REPLACE INTO collect_channels VALUES (?,?)", (ch,int(pts)))
-        db.commit()
-        await update.message.reply_text("✅ تمت إضافة قناة تجميع")
+# ====== تشغيل ======
+app = ApplicationBuilder().token(BOT_TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("admin", admin))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    elif text == "➕ إضافة نقاط" and uid == ADMIN_ID:
-        context.user_data["add"] = True
-        await update.message.reply_text("أرسل:
+print("Bot is running...")
+app.run_polling()
