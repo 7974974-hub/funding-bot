@@ -8,65 +8,40 @@ from telegram.ext import (
     filters
 )
 
-# ====== CONFIG ======
 TOKEN = "8559491392:AAG0FDmmL26jl3whCOY-sOrScWzehQ7g6VI"
 ADMIN_ID = 6858655581
+ADMIN_USERNAME = "@YOUMARN"
 
-# ====== DATABASE ======
+# ---------- DATABASE ----------
 db = sqlite3.connect("bot.db", check_same_thread=False)
 cursor = db.cursor()
-
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    points INTEGER DEFAULT 0,
-    banned INTEGER DEFAULT 0
+    points INTEGER DEFAULT 0
 )
 """)
 db.commit()
 
-# ====== USER KEYBOARD (13 زر) ======
+# ---------- USER KEYBOARD ----------
 user_keyboard = ReplyKeyboardMarkup(
     [
-        ["👤 تمويل أعضاء حقيقي"],
-        ["🎯 تجميع نقاط", "🔄 تحويل نقاط"],
-        ["♻️ تمويلات جارية", "ℹ️ معلومات الحساب"],
-        ["🎁 250 نقطة مجاناً"],
-        ["🔗 رابط الدعوة", "⚙️ التحديثات"],
-        ["🎉 اضغط هنا (1000 نقطة)"],
-        ["⭐ شراء نقاط بنجوم"],
-        ["🎁 25 عضو مجاناً", "♻️ قسم الاستبدال"],
-        ["🏠 رجوع للقائمة"]
+        ["🎯 تجميع نقاط"],
+        ["📣 تمويل قناتك"],
+        ["ℹ️ معلومات الحساب"],
+        ["💳 شراء نقاط"]
     ],
     resize_keyboard=True
 )
 
-# ====== ADMIN KEYBOARD ======
-admin_keyboard = ReplyKeyboardMarkup(
-    [
-        ["➕ إضافة نقاط"],
-        ["🚫 حظر مستخدم", "✅ فك حظر"],
-        ["📊 الإحصائيات"],
-        ["🏠 رجوع للقائمة"]
-    ],
-    resize_keyboard=True
-)
-
-# ====== START ======
+# ---------- START ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
-    cursor.execute("SELECT banned FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-
-    if row and row[0] == 1:
-        await update.message.reply_text("🚫 أنت محظور")
-        return
-
-    if not row:
+    cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+    if not cursor.fetchone():
         cursor.execute(
-            "INSERT INTO users (user_id, points, banned) VALUES (?, ?, ?)",
-            (user_id, 0, 0)
+            "INSERT INTO users (user_id, points) VALUES (?, ?)",
+            (user_id, 0)
         )
         db.commit()
 
@@ -75,84 +50,91 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=user_keyboard
     )
 
-# ====== ADMIN PANEL ======
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ هذا الأمر للأدمن فقط")
-        return
+# ---------- INFO ----------
+async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    cursor.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
+    points = cursor.fetchone()[0]
 
     await update.message.reply_text(
-        "👑 لوحة الأدمن",
-        reply_markup=admin_keyboard
+        f"🆔 آيديك: {user_id}\n💰 نقاطك: {points}"
     )
 
-# ====== BUTTON HANDLER ======
-async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+# ---------- BUY POINTS ----------
+async def buy_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"💳 لشراء النقاط راسل الأدمن مباشرة:\n{ADMIN_USERNAME}"
+    )
+
+# ---------- FUND CHANNEL ----------
+async def fund_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["step"] = "channel"
+    await update.message.reply_text("📣 أرسل يوزر القناة:")
+
+async def handle_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    step = context.user_data.get("step")
 
-    # ==== USER ====
-    if text == "ℹ️ معلومات الحساب":
+    if step == "channel":
+        context.user_data["channel"] = update.message.text
+        context.user_data["step"] = "points"
+        await update.message.reply_text("🔢 أرسل عدد النقاط:")
+        return
+
+    if step == "points":
+        try:
+            points = int(update.message.text)
+        except:
+            await update.message.reply_text("❌ أرسل رقم صحيح")
+            return
+
         cursor.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
-        points = cursor.fetchone()[0]
-        await update.message.reply_text(f"🆔 آيديك: {user_id}\n💰 نقاطك: {points}")
+        user_points = cursor.fetchone()[0]
 
-    elif text == "🎁 250 نقطة مجاناً":
-        cursor.execute("UPDATE users SET points = points + 250 WHERE user_id=?", (user_id,))
+        if user_points < points:
+            await update.message.reply_text("❌ نقاطك غير كافية")
+            context.user_data.clear()
+            return
+
+        cursor.execute(
+            "UPDATE users SET points = points - ? WHERE user_id=?",
+            (points, user_id)
+        )
         db.commit()
-        await update.message.reply_text("🎁 تم إضافة 250 نقطة")
 
-    elif text == "🎉 اضغط هنا (1000 نقطة)":
-        cursor.execute("UPDATE users SET points = points + 1000 WHERE user_id=?", (user_id,))
-        db.commit()
-        await update.message.reply_text("🎉 تم إضافة 1000 نقطة")
+        channel = context.user_data["channel"]
 
-    elif text == "🔗 رابط الدعوة":
-        link = f"https://t.me/{context.bot.username}?start={user_id}"
-        await update.message.reply_text(f"🔗 رابطك:\n{link}")
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "📣 طلب تمويل قناة\n\n"
+                f"👤 المستخدم: {user_id}\n"
+                f"📢 القناة: {channel}\n"
+                f"💰 النقاط: {points}"
+            )
+        )
 
-    elif text == "🏠 رجوع للقائمة":
-        await update.message.reply_text("🏠 القائمة الرئيسية", reply_markup=user_keyboard)
+        await update.message.reply_text("✅ تم إرسال طلبك للأدمن")
+        context.user_data.clear()
 
-    # ==== ADMIN ====
-    elif user_id == ADMIN_ID and text == "➕ إضافة نقاط":
-        context.user_data["wait_add"] = True
-        await update.message.reply_text("✏️ أرسل:\nID النقاط")
+# ---------- ROUTER ----------
+async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
 
-    elif user_id == ADMIN_ID and "wait_add" in context.user_data:
-        try:
-            uid, pts = map(int, text.split())
-            cursor.execute("UPDATE users SET points = points + ? WHERE user_id=?", (pts, uid))
-            db.commit()
-            await update.message.reply_text("✅ تم إضافة النقاط")
-        except:
-            await update.message.reply_text("❌ الصيغة خطأ")
-        context.user_data.pop("wait_add")
+    if text == "ℹ️ معلومات الحساب":
+        await info(update, context)
+    elif text == "💳 شراء نقاط":
+        await buy_points(update, context)
+    elif text == "📣 تمويل قناتك":
+        await fund_channel(update, context)
+    elif text == "🎯 تجميع نقاط":
+        await update.message.reply_text("🎯 سيتم تفعيل تجميع النقاط لاحقاً")
 
-    elif user_id == ADMIN_ID and text == "🚫 حظر مستخدم":
-        context.user_data["wait_ban"] = True
-        await update.message.reply_text("✏️ أرسل آيدي المستخدم")
-
-    elif user_id == ADMIN_ID and "wait_ban" in context.user_data:
-        try:
-            uid = int(text)
-            cursor.execute("UPDATE users SET banned = 1 WHERE user_id=?", (uid,))
-            db.commit()
-            await update.message.reply_text("🚫 تم الحظر")
-        except:
-            await update.message.reply_text("❌ خطأ")
-        context.user_data.pop("wait_ban")
-
-    elif user_id == ADMIN_ID and text == "📊 الإحصائيات":
-        cursor.execute("SELECT COUNT(*) FROM users")
-        total = cursor.fetchone()[0]
-        await update.message.reply_text(f"📊 عدد المستخدمين: {total}")
-
-# ====== RUN ======
+# ---------- MAIN ----------
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("admin", admin))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, router))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_steps))
 
 print("Bot is running...")
 app.run_polling()
